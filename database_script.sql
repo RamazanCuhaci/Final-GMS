@@ -19,23 +19,46 @@ DROP TABLE IF EXISTS termination_requests;
 DROP TABLE IF EXISTS unit_approvals;
 DROP TABLE IF EXISTS termination_forms;
 DROP TABLE IF EXISTS termination_unit_approvals;
-
--- Create Users table (base class)
-CREATE TABLE users (
-    id INTEGER PRIMARY KEY,
+DROP TABLE IF EXISTS register;
+ 
+-- Register and Users (base tables)
+CREATE TABLE register (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
     role TEXT NOT NULL
 );
-
--- Create Grade Scale table
+ 
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE NOT NULL,
+    role TEXT NOT NULL,
+    register_id INTEGER NOT NULL,
+    FOREIGN KEY (register_id) REFERENCES register(id)
+);
+ 
+CREATE TABLE user_passwords (
+    user_id INTEGER PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+ 
+-- Grade scale and Courses (lookup tables)
 CREATE TABLE grade_scale (
     id INTEGER PRIMARY KEY,
     grade TEXT UNIQUE,
     numeric_value REAL
 );
-
--- Create Students table
+ 
+CREATE TABLE courses (
+    id INTEGER PRIMARY KEY,
+    course_code TEXT UNIQUE NOT NULL,
+    course_name TEXT,
+    credits INTEGER,
+    ects REAL,
+    instructor TEXT
+);
+ 
+-- Students (references users)
 CREATE TABLE students (
     id INTEGER PRIMARY KEY,
     student_id TEXT UNIQUE,
@@ -47,8 +70,8 @@ CREATE TABLE students (
     total_ects INTEGER DEFAULT 0,
     FOREIGN KEY (id) REFERENCES users(id)
 );
-
--- Create Advisors table
+ 
+-- Advisors (references users)
 CREATE TABLE advisors (
     id INTEGER PRIMARY KEY,
     advisor_id TEXT UNIQUE,
@@ -58,23 +81,23 @@ CREATE TABLE advisors (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (id) REFERENCES users(id)
 );
-
--- Create Department Secretary table
+ 
+-- Department secretaries (references users)
 CREATE TABLE department_secretaries (
     id INTEGER PRIMARY KEY,
     secretariat_id TEXT UNIQUE,
     department_name TEXT,
     FOREIGN KEY (id) REFERENCES users(id)
 );
-
--- Create Student Affairs table
+ 
+-- Student affairs (references users)
 CREATE TABLE student_affairs (
     id INTEGER PRIMARY KEY,
     student_affair_id TEXT UNIQUE,
     FOREIGN KEY (id) REFERENCES users(id)
 );
-
--- Create Deanery table
+ 
+-- Deaneries (references users)
 CREATE TABLE deaneries (
     id INTEGER PRIMARY KEY,
     deanery_id TEXT UNIQUE,
@@ -82,54 +105,17 @@ CREATE TABLE deaneries (
     faculty_id INTEGER,
     FOREIGN KEY (id) REFERENCES users(id)
 );
-
--- Create Course table
-CREATE TABLE courses (
+ 
+-- Units (standalone)
+CREATE TABLE units (
     id INTEGER PRIMARY KEY,
-    course_code TEXT UNIQUE NOT NULL,
-    course_name TEXT,
-    credits INTEGER,
-    ects REAL,
-    instructor TEXT
+    role TEXT UNIQUE NOT NULL,
+    title TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    is_final_approver BOOLEAN DEFAULT 0
 );
-
--- Create Transcript table
-CREATE TABLE transcripts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    student_id INTEGER,
-    course_code TEXT,
-    grade TEXT,
-    semester INTEGER,
-    passed BOOLEAN,
-    FOREIGN KEY (student_id) REFERENCES students(id),
-    FOREIGN KEY (course_code) REFERENCES courses(course_code),
-    FOREIGN KEY (grade) REFERENCES grade_scale(grade)
-);
-
--- Create Transcript-Course relation (many-to-many)
-CREATE TABLE transcript_courses (
-    transcript_id INTEGER,
-    course_id INTEGER,
-    grade TEXT,
-    PRIMARY KEY (transcript_id, course_id),
-    FOREIGN KEY (transcript_id) REFERENCES transcripts(id),
-    FOREIGN KEY (course_id) REFERENCES courses(id)
-);
-
--- Create Diploma table
-CREATE TABLE diplomas (
-    id INTEGER PRIMARY KEY,
-    diploma_id TEXT UNIQUE,
-    student_id INTEGER,
-    student_name TEXT,
-    department TEXT,
-    faculty TEXT,
-    graduation_date DATE,
-    final_gpa REAL,
-    FOREIGN KEY (student_id) REFERENCES students(id)
-);
-
--- Termination Form
+ 
+-- Termination forms (references students)
 CREATE TABLE termination_forms (
     id INTEGER PRIMARY KEY,
     student_id INTEGER,
@@ -138,25 +124,20 @@ CREATE TABLE termination_forms (
     status TEXT DEFAULT 'not_submitted',
     FOREIGN KEY (student_id) REFERENCES students(id)
 );
-
--- Create units table with unique role constraint
-CREATE TABLE units (
+ 
+-- Termination requests (references students)
+CREATE TABLE termination_requests (
     id INTEGER PRIMARY KEY,
-    role TEXT UNIQUE NOT NULL,
-    title TEXT NOT NULL,
-    display_name TEXT NOT NULL,
-    is_final_approver BOOLEAN DEFAULT 0
+    student_id INTEGER,
+    request_date DATETIME,
+    status TEXT DEFAULT 'pending',
+    reason TEXT,
+    completion_date DATETIME,
+    final_notes TEXT,
+    FOREIGN KEY (student_id) REFERENCES students(id)
 );
-
--- Insert default units using INSERT OR IGNORE to prevent unique constraint violations
-INSERT OR IGNORE INTO units (role, title, display_name, is_final_approver) VALUES
-    ('library', 'Library', 'Library Office', 0),
-    ('alumni', 'Alumni Office', 'Alumni Relations', 0),
-    ('sks', 'SKS', 'Health Culture Sports Office', 0),
-    ('it', 'IT Department', 'Information Technology', 0),
-    ('student_affairs', 'Student Affairs', 'Student Affairs Office', 1);
-
--- Per-unit approval tracking
+ 
+-- Termination unit approvals (references termination_forms, units)
 CREATE TABLE termination_unit_approvals (
     termination_id INTEGER,
     unit_id INTEGER,
@@ -168,8 +149,56 @@ CREATE TABLE termination_unit_approvals (
     FOREIGN KEY (termination_id) REFERENCES termination_forms(id),
     FOREIGN KEY (unit_id) REFERENCES units(id)
 );
-
--- Create Advisor-Student relation (many-to-many)
+ 
+-- Unit approvals (references termination_requests, units)
+CREATE TABLE unit_approvals (
+    id INTEGER PRIMARY KEY,
+    termination_request_id INTEGER,
+    unit_role TEXT,
+    status TEXT DEFAULT 'pending',
+    approval_date DATETIME,
+    comments TEXT,
+    FOREIGN KEY (termination_request_id) REFERENCES termination_requests(id),
+    FOREIGN KEY (unit_role) REFERENCES units(role)
+);
+ 
+-- Diplomas (references students)
+CREATE TABLE diplomas (
+    id INTEGER PRIMARY KEY,
+    diploma_id TEXT UNIQUE,
+    student_id INTEGER,
+    student_name TEXT,
+    department TEXT,
+    faculty TEXT,
+    graduation_date DATE,
+    final_gpa REAL,
+    FOREIGN KEY (student_id) REFERENCES students(id)
+);
+ 
+-- Transcripts (references students, courses, grade_scale)
+CREATE TABLE transcripts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER,
+    course_code TEXT,
+    grade TEXT,
+    semester INTEGER,
+    passed BOOLEAN,
+    FOREIGN KEY (student_id) REFERENCES students(id),
+    FOREIGN KEY (course_code) REFERENCES courses(course_code),
+    FOREIGN KEY (grade) REFERENCES grade_scale(grade)
+);
+ 
+-- Transcript-Course relation (references transcripts, courses)
+CREATE TABLE transcript_courses (
+    transcript_id INTEGER,
+    course_id INTEGER,
+    grade TEXT,
+    PRIMARY KEY (transcript_id, course_id),
+    FOREIGN KEY (transcript_id) REFERENCES transcripts(id),
+    FOREIGN KEY (course_id) REFERENCES courses(id)
+);
+ 
+-- Advisor-Student relation (references advisors, students)
 CREATE TABLE advisor_students (
     advisor_id INTEGER,
     student_id INTEGER,
@@ -179,8 +208,8 @@ CREATE TABLE advisor_students (
     FOREIGN KEY (advisor_id) REFERENCES advisors(id),
     FOREIGN KEY (student_id) REFERENCES students(id)
 );
-
--- Create Notifications table
+ 
+-- Notifications (references users)
 CREATE TABLE notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sender_id INTEGER,
@@ -190,8 +219,8 @@ CREATE TABLE notifications (
     FOREIGN KEY (sender_id) REFERENCES users(id),
     FOREIGN KEY (receiver_id) REFERENCES users(id)
 );
-
--- Create Graduation Lists table
+ 
+-- Graduation lists (references users)
 CREATE TABLE graduation_lists (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     list_type TEXT,
@@ -204,8 +233,8 @@ CREATE TABLE graduation_lists (
     notes TEXT,
     FOREIGN KEY (owner_id) REFERENCES users(id)
 );
-
--- Create Students in graduation lists (many-to-many)
+ 
+-- Graduation list students (references graduation_lists, students)
 CREATE TABLE graduation_list_students (
     list_id INTEGER,
     student_id INTEGER,
@@ -219,31 +248,10 @@ CREATE TABLE graduation_list_students (
     FOREIGN KEY (list_id) REFERENCES graduation_lists(id),
     FOREIGN KEY (student_id) REFERENCES students(id)
 );
-
--- Create termination_requests table
-CREATE TABLE termination_requests (
-    id INTEGER PRIMARY KEY,
-    student_id INTEGER,
-    request_date DATETIME,
-    status TEXT DEFAULT 'pending',
-    reason TEXT,
-    completion_date DATETIME,
-    final_notes TEXT,
-    FOREIGN KEY (student_id) REFERENCES students(id)
-);
-
--- Create unit_approvals table
-CREATE TABLE unit_approvals (
-    id INTEGER PRIMARY KEY,
-    termination_request_id INTEGER,
-    unit_role TEXT,
-    status TEXT DEFAULT 'pending',
-    approval_date DATETIME,
-    comments TEXT,
-    FOREIGN KEY (termination_request_id) REFERENCES termination_requests(id),
-    FOREIGN KEY (unit_role) REFERENCES units(role)
-);
-
+ 
+-- Create index for email lookups on register table
+CREATE INDEX idx_register_email ON register(email);
+ 
 -- Create indexes for performance
 CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_role ON users(role);
@@ -256,192 +264,31 @@ CREATE INDEX idx_graduation_lists_status ON graduation_lists(status);
 CREATE INDEX idx_notifications_receiver ON notifications(receiver_id);
 CREATE INDEX idx_notifications_type ON notifications(notification_type);
 CREATE INDEX idx_unit_approvals_request ON unit_approvals(termination_request_id);
+ 
 
--- Insert grade scale values
-INSERT INTO grade_scale (grade, numeric_value) VALUES
-('AA', 4.0),
-('BA', 3.5),
-('BB', 3.0),
-('CB', 2.5),
-('CC', 2.0),
-('DC', 1.5),
-('DD', 1.0),
-('FD', 0.5),
-('FF', 0.0);
-
--- Insert realistic course data (FIXED: using course_code consistently)
-INSERT INTO courses (course_code, course_name, credits, ects, instructor) VALUES
-('CENG114', 'Programming I', 1000, 1000, 'Prof. A'),
-('CENG115', 'Programming II', 4, 6, 'Prof. A'),
-('CENG211', 'Data Structures', 3, 5, 'Prof. B'),
-('CENG213', 'Algorithms', 3, 5, 'Prof. B'),
-('CENG311', 'Operating Systems', 4, 6, 'Prof. C'),
-('CENG313', 'Database Systems', 3, 5, 'Prof. C'),
-('CENG411', 'Software Engineering', 4, 6, 'Prof. D'),
-('CENG413', 'Computer Networks', 3, 5, 'Prof. D'),
-('CENG321', 'Computer Architecture', 3, 5, 'Prof. E'),
-('CENG322', 'Compilers', 4, 6, 'Prof. E'),
-('CENG323', 'Artificial Intelligence', 3, 5, 'Prof. F'),
-('CENG324', 'Machine Learning', 3, 5, 'Prof. F'),
-('CENG325', 'Web Programming', 2, 3, 'Prof. G'),
-('CENG326', 'Mobile Programming', 2, 3, 'Prof. G'),
-('CENG227', 'Object Oriented Programming', 4, 6, 'Prof. H'),
-('CENG228', 'Database Management', 3, 5, 'Prof. I'),
-('CENG229', 'Software Project', 4, 6, 'Prof. J'),
-('CENG230', 'Computer Graphics', 3, 5, 'Prof. K'),
-('CENG231', 'Network Security', 3, 5, 'Prof. L'),
-('CENG232', 'Mobile App Development', 3, 5, 'Prof. M'),
-('CENG233', 'Data Mining', 3, 5, 'Prof. N'),
-('CENG234', 'Cloud Computing', 3, 5, 'Prof. O'),
-('CENG235', 'IoT Systems', 2, 3, 'Prof. P'),
-('CENG236', 'Blockchain Technology', 2, 3, 'Prof. Q'),
-('CENG237', 'Calculus I', 4, 6, 'Prof. R'),
-('CENG238', 'Calculus II', 4, 6, 'Prof. S'),
-('CENG239', 'Physics I', 3, 5, 'Prof. T'),
-('CENG240', 'Physics II', 3, 5, 'Prof. U'),
-('CENG241', 'Linear Algebra', 3, 5, 'Prof. V'),
-('CENG242', 'Statistics', 3, 5, 'Prof. W'),
-('CENG243', 'Discrete Mathematics', 3, 5, 'Prof. X'),
-('CENG244', 'Digital Logic', 3, 5, 'Prof. Y'),
-('CENG245', 'Circuit Analysis', 3, 5, 'Prof. Z'),
-('CENG246', 'Electronics', 3, 5, 'Prof. AA'),
-('CENG247', 'Signals and Systems', 3, 5, 'Prof. BB'),
-('CENG248', 'Engineering Ethics', 2, 3, 'Prof. CC'),
-('CENG249', 'Technical Writing', 2, 3, 'Prof. DD'),
-('CENG250', 'Internship', 2, 3, 'Prof. EE');
-
--- Create student status view
-CREATE VIEW student_status AS
-SELECT 
-    s.id as student_id,
-    s.student_id as student_number,
-    s.faculty,
-    s.department,
-    s.gpa,
-    s.total_credits,
-    s.total_ects,
-    CASE 
-        WHEN s.gpa >= 2.00 AND s.total_credits >= 140 AND s.total_ects >= 240
-        THEN 1 
-        ELSE 0 
-    END AS is_eligible
-FROM students s;
-
--- Create trigger to update student totals when transcript changes
-DROP TRIGGER IF EXISTS update_student_totals_on_insert;
-CREATE TRIGGER update_student_totals_on_insert
-AFTER INSERT ON transcripts
-BEGIN
-    UPDATE students 
-    SET total_credits = (
-        SELECT COALESCE(SUM(c.credits), 0)
-        FROM transcripts t
-        JOIN courses c ON t.course_code = c.course_code
-        WHERE t.student_id = NEW.student_id
-        AND t.passed = 1
-    ),
-    total_ects = (
-        SELECT COALESCE(SUM(c.ects), 0)
-        FROM transcripts t
-        JOIN courses c ON t.course_code = c.course_code
-        WHERE t.student_id = NEW.student_id
-        AND t.passed = 1
-    ),
-    gpa = (
-        SELECT COALESCE(ROUND(AVG(gs.numeric_value), 2), 0.0)
-        FROM transcripts t
-        JOIN grade_scale gs ON t.grade = gs.grade
-        WHERE t.student_id = NEW.student_id
-    )
-    WHERE id = NEW.student_id;
-END;
-
-DROP TRIGGER IF EXISTS update_student_totals_on_update;
-CREATE TRIGGER update_student_totals_on_update
-AFTER UPDATE ON transcripts
-BEGIN
-    UPDATE students 
-    SET total_credits = (
-        SELECT COALESCE(SUM(c.credits), 0)
-        FROM transcripts t
-        JOIN courses c ON t.course_code = c.course_code
-        WHERE t.student_id = NEW.student_id
-        AND t.passed = 1
-    ),
-    total_ects = (
-        SELECT COALESCE(SUM(c.ects), 0)
-        FROM transcripts t
-        JOIN courses c ON t.course_code = c.course_code
-        WHERE t.student_id = NEW.student_id
-        AND t.passed = 1
-    ),
-    gpa = (
-        SELECT COALESCE(ROUND(AVG(gs.numeric_value), 2), 0.0)
-        FROM transcripts t
-        JOIN grade_scale gs ON t.grade = gs.grade
-        WHERE t.student_id = NEW.student_id
-    )
-    WHERE id = NEW.student_id;
-END;
-
--- Trigger to update termination status
-DROP TRIGGER IF EXISTS update_termination_status;
-CREATE TRIGGER update_termination_status
-AFTER UPDATE ON unit_approvals
-BEGIN
-    UPDATE termination_requests 
-    SET status = CASE
-        WHEN NOT EXISTS (
-            SELECT 1 FROM unit_approvals ua
-            JOIN units u ON ua.unit_role = u.role
-            WHERE ua.termination_request_id = NEW.termination_request_id 
-            AND ua.status = 'pending'
-            AND u.is_final_approver = 0
-        ) THEN 'pending_final_approval'
-        WHEN EXISTS (
-            SELECT 1 FROM unit_approvals ua
-            JOIN units u ON ua.unit_role = u.role
-            WHERE ua.termination_request_id = NEW.termination_request_id 
-            AND ua.status = 'approved'
-            AND u.is_final_approver = 1
-        ) THEN 'approved'
-        WHEN EXISTS (
-            SELECT 1 FROM unit_approvals ua
-            WHERE ua.termination_request_id = NEW.termination_request_id 
-            AND ua.status = 'rejected'
-        ) THEN 'rejected'
-        ELSE 'pending'
-    END,
-    completion_date = CASE
-        WHEN EXISTS (
-            SELECT 1 FROM unit_approvals ua
-            JOIN units u ON ua.unit_role = u.role
-            WHERE ua.termination_request_id = NEW.termination_request_id 
-            AND ua.status = 'approved'
-            AND u.is_final_approver = 1
-        ) THEN DATETIME('now')
-        ELSE completion_date
-    END
-    WHERE id = NEW.termination_request_id;
-END;
-
--- Sample users
-INSERT INTO users (id, email, password, role) VALUES
-(1, 'ali@student.edu', 'hashedpass1', 'student'),
-(2, 'ayse@advisor.edu', 'hashedpass2', 'advisor'),
-(3, 'fatma@secretary.edu', 'hashedpass3', 'department_secretary'),
-(4, 'mehmet@affairs.edu', 'hashedpass4', 'student_affairs'),
-(5, 'ahmet@deanery.edu', 'hashedpass5', 'deanery'),
-(6, 'zeynep@student.edu', 'hashedpass6', 'student'),
-(7, 'kerem@advisor.edu', 'hashedpass7', 'advisor'),
-(8, 'leyla@secretary.edu', 'hashedpass8', 'department_secretary'),
-(9, 'omer@affairs.edu', 'hashedpass9', 'student_affairs'),
-(10, 'sena@deanery.edu', 'hashedpass10', 'deanery'),
-(11, 'tarik@library.edu', 'hashedpass11', 'unit'),
-(12, 'alumni@alumni.edu', 'hashedpass12', 'unit'),
-(13, 'sks@sks.edu', 'hashedpass13', 'unit'),
-(14, 'it@it.edu', 'hashedpass14', 'unit'),
-(15, 'affairs@affairs.edu', 'hashedpass15', 'unit');
+-- Insert into register table first
+INSERT INTO register (id, email, role) VALUES
+(1, 'ali@std.iyte.edu.tr', 'student'),
+(2, 'ayse@iyte.edu.tr', 'advisor'),
+(3, 'fatma@iyte.edu.tr', 'department_secretary'),
+(4, 'mehmet@iyte.edu.tr', 'student_affairs'),
+(5, 'ahmet@iyte.edu.tr', 'deanery'),
+(6, 'veli@iyte.edu.tr', 'secretary'),
+(8, 'leyla@iyte.edu.tr', 'department_secretary'),
+(9, 'omer@iyte.edu.tr', 'student_affairs'),
+(10, 'sena@iyte.edu.tr', 'deanery'),
+(11, 'tarik@iyte.edu.tr', 'unit'),
+(12, 'kemal@iyte.edu.tr', 'unit'),
+(13, 'samet@iyte.edu.tr', 'unit'),
+(14, 'ferah@iyte.edu.tr', 'unit'),
+(15, 'burak@iyte.edu.tr', 'unit'),
+(16, 'kerem@iyte.edu.tr', 'advisor'),
+(17, 'deanery@iyte.edu.tr', 'advisor'),
+(18, 'yigit@iyte.edu.tr', 'advisor'),
+(19, 'esra@std.iyte.edu.tr', 'student'),
+(20, 'baranyildiz@std.iyte.edu.tr', 'student'),
+(21, 'mehmetozturk@std.iyte.edu.tr', 'student'),
+(22, 'elifbozkurt@std.iyte.edu.tr', 'student');
 
 -- Sample students
 INSERT INTO students (id, student_id, faculty, department, graduation_status) VALUES
@@ -570,6 +417,184 @@ INSERT INTO notifications (id, sender_id, receiver_id, notification_type, timest
 (1, 2, 1, 'advisor_comment', '2024-05-01 10:00:00'),
 (2, 5, 6, 'dean_approval_required', '2024-05-02 14:30:00');
 
+-- Create student status view
+CREATE VIEW student_status AS
+SELECT 
+    s.id as student_id,
+    s.student_id as student_number,
+    s.faculty,
+    s.department,
+    s.gpa,
+    s.total_credits,
+    s.total_ects,
+    CASE 
+        WHEN s.gpa >= 2.00 AND s.total_credits >= 140 AND s.total_ects >= 240
+        THEN 1 
+        ELSE 0 
+    END AS is_eligible
+FROM students s;
+
+-- Create trigger to update student totals when transcript changes
+DROP TRIGGER IF EXISTS update_student_totals_on_insert;
+CREATE TRIGGER update_student_totals_on_insert
+AFTER INSERT ON transcripts
+BEGIN
+    UPDATE students 
+    SET total_credits = (
+        SELECT COALESCE(SUM(c.credits), 0)
+        FROM transcripts t
+        JOIN courses c ON t.course_code = c.course_code
+        WHERE t.student_id = NEW.student_id
+        AND t.passed = 1
+    ),
+    total_ects = (
+        SELECT COALESCE(SUM(c.ects), 0)
+        FROM transcripts t
+        JOIN courses c ON t.course_code = c.course_code
+        WHERE t.student_id = NEW.student_id
+        AND t.passed = 1
+    ),
+    gpa = (
+        SELECT COALESCE(ROUND(AVG(gs.numeric_value), 2), 0.0)
+        FROM transcripts t
+        JOIN grade_scale gs ON t.grade = gs.grade
+        WHERE t.student_id = NEW.student_id
+    )
+    WHERE id = NEW.student_id;
+END;
+
+DROP TRIGGER IF EXISTS update_student_totals_on_update;
+CREATE TRIGGER update_student_totals_on_update
+AFTER UPDATE ON transcripts
+BEGIN
+    UPDATE students 
+    SET total_credits = (
+        SELECT COALESCE(SUM(c.credits), 0)
+        FROM transcripts t
+        JOIN courses c ON t.course_code = c.course_code
+        WHERE t.student_id = NEW.student_id
+        AND t.passed = 1
+    ),
+    total_ects = (
+        SELECT COALESCE(SUM(c.ects), 0)
+        FROM transcripts t
+        JOIN courses c ON t.course_code = c.course_code
+        WHERE t.student_id = NEW.student_id
+        AND t.passed = 1
+    ),
+    gpa = (
+        SELECT COALESCE(ROUND(AVG(gs.numeric_value), 2), 0.0)
+        FROM transcripts t
+        JOIN grade_scale gs ON t.grade = gs.grade
+        WHERE t.student_id = NEW.student_id
+    )
+    WHERE id = NEW.student_id;
+END;
+
+-- Trigger to update termination status
+DROP TRIGGER IF EXISTS update_termination_status;
+CREATE TRIGGER update_termination_status
+AFTER UPDATE ON unit_approvals
+BEGIN
+    UPDATE termination_requests 
+    SET status = CASE
+        WHEN NOT EXISTS (
+            SELECT 1 FROM unit_approvals ua
+            JOIN units u ON ua.unit_role = u.role
+            WHERE ua.termination_request_id = NEW.termination_request_id 
+            AND ua.status = 'pending'
+            AND u.is_final_approver = 0
+        ) THEN 'pending_final_approval'
+        WHEN EXISTS (
+            SELECT 1 FROM unit_approvals ua
+            JOIN units u ON ua.unit_role = u.role
+            WHERE ua.termination_request_id = NEW.termination_request_id 
+            AND ua.status = 'approved'
+            AND u.is_final_approver = 1
+        ) THEN 'approved'
+        WHEN EXISTS (
+            SELECT 1 FROM unit_approvals ua
+            WHERE ua.termination_request_id = NEW.termination_request_id 
+            AND ua.status = 'rejected'
+        ) THEN 'rejected'
+        ELSE 'pending'
+    END,
+    completion_date = CASE
+        WHEN EXISTS (
+            SELECT 1 FROM unit_approvals ua
+            JOIN units u ON ua.unit_role = u.role
+            WHERE ua.termination_request_id = NEW.termination_request_id 
+            AND ua.status = 'approved'
+            AND u.is_final_approver = 1
+        ) THEN DATETIME('now')
+        ELSE completion_date
+    END
+    WHERE id = NEW.termination_request_id;
+END;
+
+-- Create trigger to ensure user role matches register role
+CREATE TRIGGER IF NOT EXISTS ensure_matching_roles
+BEFORE INSERT ON users
+BEGIN
+    SELECT CASE
+        WHEN NEW.role != (SELECT role FROM register WHERE id = NEW.register_id)
+        THEN RAISE(ABORT, 'User role must match register role')
+    END;
+END;
+
+-- Insert grade scale values
+INSERT INTO grade_scale (grade, numeric_value) VALUES
+('AA', 4.0),
+('BA', 3.5),
+('BB', 3.0),
+('CB', 2.5),
+('CC', 2.0),
+('DC', 1.5),
+('DD', 1.0),
+('FD', 0.5),
+('FF', 0.0);
+
+-- Insert realistic course data (FIXED: using course_code consistently)
+INSERT INTO courses (course_code, course_name, credits, ects, instructor) VALUES
+('CENG114', 'Programming I', 1000, 1000, 'Prof. A'),
+('CENG115', 'Programming II', 4, 6, 'Prof. A'),
+('CENG211', 'Data Structures', 3, 5, 'Prof. B'),
+('CENG213', 'Algorithms', 3, 5, 'Prof. B'),
+('CENG311', 'Operating Systems', 4, 6, 'Prof. C'),
+('CENG313', 'Database Systems', 3, 5, 'Prof. C'),
+('CENG411', 'Software Engineering', 4, 6, 'Prof. D'),
+('CENG413', 'Computer Networks', 3, 5, 'Prof. D'),
+('CENG321', 'Computer Architecture', 3, 5, 'Prof. E'),
+('CENG322', 'Compilers', 4, 6, 'Prof. E'),
+('CENG323', 'Artificial Intelligence', 3, 5, 'Prof. F'),
+('CENG324', 'Machine Learning', 3, 5, 'Prof. F'),
+('CENG325', 'Web Programming', 2, 3, 'Prof. G'),
+('CENG326', 'Mobile Programming', 2, 3, 'Prof. G'),
+('CENG227', 'Object Oriented Programming', 4, 6, 'Prof. H'),
+('CENG228', 'Database Management', 3, 5, 'Prof. I'),
+('CENG229', 'Software Project', 4, 6, 'Prof. J'),
+('CENG230', 'Computer Graphics', 3, 5, 'Prof. K'),
+('CENG231', 'Network Security', 3, 5, 'Prof. L'),
+('CENG232', 'Mobile App Development', 3, 5, 'Prof. M'),
+('CENG233', 'Data Mining', 3, 5, 'Prof. N'),
+('CENG234', 'Cloud Computing', 3, 5, 'Prof. O'),
+('CENG235', 'IoT Systems', 2, 3, 'Prof. P'),
+('CENG236', 'Blockchain Technology', 2, 3, 'Prof. Q'),
+('CENG237', 'Calculus I', 4, 6, 'Prof. R'),
+('CENG238', 'Calculus II', 4, 6, 'Prof. S'),
+('CENG239', 'Physics I', 3, 5, 'Prof. T'),
+('CENG240', 'Physics II', 3, 5, 'Prof. U'),
+('CENG241', 'Linear Algebra', 3, 5, 'Prof. V'),
+('CENG242', 'Statistics', 3, 5, 'Prof. W'),
+('CENG243', 'Discrete Mathematics', 3, 5, 'Prof. X'),
+('CENG244', 'Digital Logic', 3, 5, 'Prof. Y'),
+('CENG245', 'Circuit Analysis', 3, 5, 'Prof. Z'),
+('CENG246', 'Electronics', 3, 5, 'Prof. AA'),
+('CENG247', 'Signals and Systems', 3, 5, 'Prof. BB'),
+('CENG248', 'Engineering Ethics', 2, 3, 'Prof. CC'),
+('CENG249', 'Technical Writing', 2, 3, 'Prof. DD'),
+('CENG250', 'Internship', 2, 3, 'Prof. EE');
+
 -- Assign all eligible students to Kerem
 INSERT INTO advisor_students (advisor_id, student_id, status, assigned_date)
 SELECT 
@@ -606,3 +631,4 @@ INSERT INTO advisor_students (advisor_id, student_id, status, assigned_date) VAL
 INSERT INTO advisor_students (advisor_id, student_id, status, assigned_date) VALUES
 ((SELECT id FROM users WHERE email = 'ayse@iyte.edu.tr'), (SELECT id FROM users WHERE email = 'student3@std.iyte.edu.tr'), 'active', '2024-05-25'),
 ((SELECT id FROM users WHERE email = 'ayse@iyte.edu.tr'), (SELECT id FROM users WHERE email = 'student4@std.iyte.edu.tr'), 'active', '2024-05-25');
+

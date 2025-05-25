@@ -7,6 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel, EmailStr, field_validator, Field
 from typing import List, Optional
 from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = 'supersecretkey'
@@ -240,150 +241,34 @@ def home():
     
     return render_template('home.html', **context)
 
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        confirm_password = request.form['confirm_password']
-
-        # Determine role
-        if email.endswith('@std.iyte.edu.tr'):
-            role = UserRole.STUDENT.value
-        elif email.endswith('@iyte.edu.tr'):
-            flash('Staff registration must be done by an administrator.', 'error')
-            return redirect(url_for('register'))
-        else:
-            flash('Email domain not allowed. Use a valid IZTECH email.', 'error')
-            return redirect(url_for('register'))
-
-        # Check if email already exists
-        with sqlite3.connect(DATABASE) as conn:
-            c = conn.cursor()
-            c.execute('SELECT * FROM users WHERE email = ?', (email,))
-            if c.fetchone():
-                flash('This email address is already registered.', 'error')
-                return redirect(url_for('register'))
-
-            # Set initial student status
-            if role == UserRole.STUDENT.value:
-                student_id = email.split('@')[0]
-                # Initial status is NOT_ELIGIBLE until they meet requirements via triggers
-                graduation_status = GraduationStatus.NOT_ELIGIBLE.value
-
-        # Check password length
-        if len(password) < 8:
-            flash('Password must be at least 8 characters long.', 'error')
-            return redirect(url_for('register'))
-
-        # Check password match
-        if password != confirm_password:
-            flash('Passwords do not match.', 'error')
-            return redirect(url_for('register'))
-
-        # All checks passed — insert
-        with sqlite3.connect(DATABASE) as conn:
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-
-            c.execute('INSERT INTO users (email, password, role) VALUES (?, ?, ?)',
-                      (email, password, role))
-            user_id = c.lastrowid
-
-            student_id = email.split('@')[0]
-            faculty = "Engineering"
-            department = "Computer Engineering"
-
-            # Initialize student record with defaults
-            c.execute('''
-                INSERT INTO students (
-                    id, student_id, faculty, department, graduation_status
-                ) VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, student_id, faculty, department, graduation_status))
-
-            # Try to find and assign an advisor
-            c.execute('''
-                SELECT id FROM advisors 
-                WHERE department_name = ? 
-                ORDER BY (
-                    SELECT COUNT(*) 
-                    FROM advisor_students 
-                    WHERE advisor_id = advisors.id
-                ) ASC
-                LIMIT 1
-            ''', (department,))
-            advisor = c.fetchone()
-            
-            if advisor:
-                # Assign advisor to student
-                c.execute('''
-                    INSERT INTO advisor_students (advisor_id, student_id, status, assigned_date)
-                    VALUES (?, ?, ?, ?)
-                ''', (advisor['id'], user_id, 'active', datetime.now()))
-
-            conn.commit()
-            flash('Registration completed successfully!', 'success')
-            return redirect(url_for('login'))
-
-    return render_template('register.html')
-
-
+# Remove the duplicate route and keep only one login function
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        email = request.form['email']
+        email = request.form['email'].strip().lower()
         password = request.form['password']
 
         with sqlite3.connect(DATABASE) as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
-
-            # Check user credentials
-            c.execute('SELECT * FROM users WHERE email = ? AND password = ?', (email, password))
+            c.execute('SELECT * FROM users WHERE email = ?', (email,))
             user = c.fetchone()
+            if not user:
+                flash('No account found with this email.', 'error')
+                return redirect(url_for('login'))
 
-            if user:
-                session['email'] = user['email']
-                session['user_id'] = user['id']
-                session['role'] = user['role']
+            c.execute('SELECT password_hash FROM user_passwords WHERE user_id = ?', (user['id'],))
+            pw_row = c.fetchone()
+            if not pw_row or not check_password_hash(pw_row['password_hash'], password):
+                flash('Invalid password.', 'error')
+                return redirect(url_for('login'))
 
-                # Student-specific session data
-                if user['role'] == UserRole.STUDENT.value:
-                    c.execute('SELECT * FROM students WHERE id = ?', (user['id'],))
-                    student = c.fetchone()
-                    if student:
-                        session['student_id'] = student['student_id']
-                        session['faculty'] = student['faculty']
-                        session['department'] = student['department']
-                        session['graduation_status'] = student['graduation_status']
-                
-                # Advisor-specific session data
-                elif user['role'] == UserRole.ADVISOR.value:
-                    c.execute('SELECT department_name FROM advisors WHERE id = ?', (user['id'],))
-                    advisor = c.fetchone()
-                    if advisor:
-                        session['department_name'] = advisor['department_name']
-
-                # Department Secretary-specific session data
-                elif user['role'] == UserRole.DEPARTMENT_SECRETARY.value:
-                    c.execute('SELECT department_name FROM department_secretaries WHERE id = ?', (user['id'],))
-                    secretary = c.fetchone()
-                    if secretary:
-                        # Store both role and department_name in session
-                        session['role'] = 'department_secretary'  # Use string directly
-                        session['department_name'] = secretary['department_name']
-                
-                # Deanery-specific session data
-                elif user['role'] == UserRole.DEANERY.value:
-                    c.execute('SELECT faculty_name FROM deaneries WHERE id = ?', (user['id'],))
-                    deanery_user_data = c.fetchone() # Renamed to avoid conflict with deanery variable in home route
-                    if deanery_user_data:
-                        session['faculty_name'] = deanery_user_data['faculty_name']
-
-                flash('Login successful.')
-                return redirect(url_for('home'))
-            else:
-                flash('Invalid email or password.')
+            # Set session, etc.
+            session['email'] = user['email']
+            session['user_id'] = user['id']
+            session['role'] = user['role']
+            flash('Login successful!', 'success')
+            return redirect(url_for('home'))
 
     return render_template('login.html')
 
@@ -787,7 +672,7 @@ def approve_termination(request_id):
                 
                 c.execute('''INSERT INTO notifications 
                            (sender_id, receiver_id, notification_type, timestamp)
-                           VALUES (?, ?, ?, ?)''',
+                        VALUES (?, ?, ?, ?)''',
                         (user_id, student_id, 
                          NotificationType.TERMINATION_FULLY_APPROVED.value,
                          datetime.now()))
@@ -1053,7 +938,7 @@ def prepare_graduation_list():
                 conn.close()
         return redirect(url_for('prepare_graduation_list')) # Redirect back on error to try again
 
-    # GET request: Fetch advisees who have applied for graduation
+    # GET request: Fetch advisees who have applied for graduation and are not already in a list
     eligible_advisees = []
     try:
         c.execute('''
@@ -1062,7 +947,14 @@ def prepare_graduation_list():
             JOIN users u ON s.id = u.id
             JOIN advisor_students as_map ON s.id = as_map.student_id
             WHERE as_map.advisor_id = ?
-''', (advisor_user_id,))
+              AND s.graduation_status = ?
+              AND s.id NOT IN (
+                  SELECT gls.student_id
+                  FROM graduation_list_students gls
+                  JOIN graduation_lists gl ON gls.list_id = gl.id
+                  WHERE gl.owner_id = ? AND gl.list_type = 'advisor'
+              )
+        ''', (advisor_user_id, GraduationStatus.APPLIED.value, advisor_user_id))
         
         rows = c.fetchall()
         if rows:
@@ -1313,597 +1205,94 @@ def prepare_department_list():
 
     except sqlite3.Error as e:
         flash(f'Database error: {e}', 'error')
-        print(f"Database error in prepare_department_list GET: {e}")
-        all_students = []
-
-    return render_template('prepare_department_list.html', 
-                         department_name=department_name, 
-                         students=all_students)
-
-@app.route('/view_student_transcript/<int:student_id>')
-@login_required
-@role_required(UserRole.DEPARTMENT_SECRETARY)
-def view_student_transcript(student_id):
-    """View transcript for a specific student (for department secretary)"""
-    try:
-        with sqlite3.connect(DATABASE) as conn:
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            
-            # Get student basic info
-            c.execute('''
-                SELECT s.student_id, s.faculty, s.department, s.gpa, 
-                       s.total_credits, s.total_ects, u.email
-                FROM students s
-                JOIN users u ON s.id = u.id
-                WHERE s.id = ?
-            ''', (student_id,))
-            student_info = c.fetchone()
-            
-            if not student_info:
-                flash('Student not found.', 'error')
-                return redirect(url_for('prepare_department_list'))
-            
-            # Get transcript data
-            c.execute('''
-                SELECT t.semester, c.course_code, c.course_name, c.credits, c.ects,
-                       t.grade, gs.numeric_value, t.passed
-                FROM transcripts t
-                JOIN courses c ON t.course_code = c.course_code
-                JOIN grade_scale gs ON t.grade = gs.grade
-                WHERE t.student_id = ?
-                ORDER BY t.semester, c.course_code
-            ''', (student_id,))
-            transcript_data = c.fetchall()
-
-    except sqlite3.Error as e:
-        flash(f'Database error: {e}', 'error')
-        return redirect(url_for('prepare_department_list'))
-
-    return render_template('view_student_transcript.html', 
-                         student=student_info,
-                         transcript=transcript_data)
-
-# Deanery routes
-@app.route('/view_department_lists', methods=['GET'])
-@login_required
-@role_required(UserRole.DEANERY)
-@feature_required
-def view_department_lists():
-    deanery_user_id = session.get('user_id')
-    faculty_name = session.get('faculty_name') # Set at login for Deanery users
-    department_lists = []
-
-    if not deanery_user_id or not faculty_name:
-        flash('User or faculty information not found. Please log in again.', 'error')
-        return redirect(url_for('login'))
-
-    try:
-        with sqlite3.connect(DATABASE) as conn:
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-
-            # Fetch department lists for the Deanery's faculty
-            # This query identifies department lists where at least one student in that list belongs to the Deanery's faculty.
-            # It also fetches the creating secretary's email and the department name of that secretary.
-            c.execute("""
-                SELECT DISTINCT gl.id as list_id, gl.created_date, gl.status, 
-                                u_sec.email as secretary_email, ds.department_name
-                FROM graduation_lists gl
-                JOIN users u_sec ON gl.owner_id = u_sec.id AND u_sec.role = ? 
-                JOIN department_secretaries ds ON u_sec.id = ds.id
-                JOIN graduation_list_students gls ON gl.id = gls.list_id
-                JOIN students s ON gls.student_id = s.id
-                WHERE gl.list_type = ? AND s.faculty = ? AND gl.status IN (?, ?, ?)
-                ORDER BY gl.created_date DESC
-            """, (UserRole.DEPARTMENT_SECRETARY.value, 'department', faculty_name, 
-                  'pending_deanery_review', 'approved_by_deanery', 'rejected_by_deanery'))
-            
-            lists_data = c.fetchall()
-
-            if lists_data:
-                for row_data in lists_data:
-                    item = dict(row_data)
-                    if item['created_date']:
-                        try:
-                            item['created_date'] = datetime.strptime(item['created_date'], '%Y-%m-%d %H:%M:%S.%f')
-                        except ValueError:
-                            try:
-                                # Try without microseconds
-                                item['created_date'] = datetime.strptime(item['created_date'], '%Y-%m-%d %H:%M:%S')
-                            except ValueError:
-                                try:
-                                    # Try date only
-                                    item['created_date'] = datetime.strptime(item['created_date'], '%Y-%m-%d')
-                                except ValueError:
-                                    # Leave as string if all parsing fails
-                                    pass
-                    department_lists.append(item)
-            else:
-                flash(f'No department graduation lists found for the {faculty_name} faculty requiring action or previously processed.', 'info')
-
-    except sqlite3.Error as e:
-        flash(f'Database error: {e}', 'error')
-        print(f"Database error in view_department_lists: {e}")
+        print(f"DB error in prepare_department_list GET: {e}")
     except Exception as e:
         flash(f'An unexpected error occurred: {e}', 'error')
-        print(f"Unexpected error in view_department_lists: {e}")
-        
-    return render_template('view_department_lists.html', department_lists=department_lists, faculty_name=faculty_name)
-
-@app.route('/prepare_faculty_list', methods=['GET', 'POST'])
-@login_required
-@role_required(UserRole.DEANERY)
-@feature_required
-def prepare_faculty_list():
-    deanery_user_id = session.get('user_id')
-    faculty_name = session.get('faculty_name')
-
-    if not deanery_user_id or not faculty_name:
-        flash('User or faculty information not found. Please log in again.', 'error')
-        return redirect(url_for('login'))
-
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    if request.method == 'POST':
-        selected_student_ids_str = request.form.getlist('student_ids')
-        if not selected_student_ids_str:
-            flash('No students selected to include in the faculty list.', 'warning')
-            conn.close()
-            return redirect(url_for('prepare_faculty_list'))
-
-        selected_student_ids = [int(sid) for sid in selected_student_ids_str]
-
-        try:
-            current_date = datetime.now()
-            academic_year = f"{current_date.year}/{current_date.year + 1}"
-            semester = "fall" if current_date.month >= 9 else "spring" if current_date.month >= 2 else "summer"
-            
-            # Create the faculty graduation list entry with academic year and semester
-            c.execute("""INSERT INTO graduation_lists 
-                        (list_type, owner_id, created_date, updated_date, academic_year, semester, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                      ('faculty', deanery_user_id, current_date, current_date,
-                       academic_year, semester, 'pending_student_affairs_review'))
-            faculty_list_id = c.lastrowid
-
-            # Add selected students to the faculty list with their current academic info
-            for student_user_id in selected_student_ids:
-                # Fetch current student info
-                c.execute('''SELECT gpa, total_credits, total_ects 
-                           FROM students WHERE id = ?''', (student_user_id,))
-                student_info = c.fetchone()
-                
-                c.execute("""INSERT INTO graduation_list_students 
-                           (list_id, student_id, rank, gpa, total_credits, total_ects, added_date)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""", 
-                         (faculty_list_id, student_user_id, 0, student_info['gpa'],
-                          student_info['total_credits'], student_info['total_ects'], current_date))
-
-            # Update status of processed department lists for this faculty
-            # This marks department lists of status 'pending_deanery_review' for the current faculty as consolidated.
-            # More precise logic would involve tracking which specific department lists contributed students.
-            c.execute("""
-                UPDATE graduation_lists
-                SET status = 'consolidated_by_deanery'
-                WHERE list_type = 'department' 
-                  AND status = 'pending_deanery_review' 
-                  AND id IN (
-                      SELECT DISTINCT gls.list_id 
-                      FROM graduation_list_students gls
-                      JOIN students s ON gls.student_id = s.id
-                      WHERE s.faculty = ?
-                  )
-            """, (faculty_name,))
-            
-            # Notify all Student Affairs users
-            c.execute("SELECT id FROM users WHERE role = ?", (UserRole.STUDENT_AFFAIRS.value,))
-            student_affairs_users = c.fetchall()
-            for sa_user in student_affairs_users:
-                c.execute("""INSERT INTO notifications (sender_id, receiver_id, notification_type, timestamp)
-                            VALUES (?, ?, ?, ?)""",
-                          (deanery_user_id, sa_user['id'], NotificationType.FACULTY_LIST_SUBMITTED_TO_STUDENT_AFFAIRS.value, datetime.now()))
-
-            conn.commit()
-            flash(f'Faculty graduation list (ID: {faculty_list_id}) for {faculty_name} submitted to Student Affairs!', 'success')
-            return redirect(url_for('home'))
-
-        except sqlite3.Error as e:
-            conn.rollback()
-            flash(f'Database error: {e}', 'error')
-            print(f"DB error in prepare_faculty_list POST: {e}")
-        except Exception as e:
-            conn.rollback()
-            flash(f'An unexpected error occurred: {e}', 'error')
-            print(f"Unexpected error in prepare_faculty_list POST: {e}")
-        finally:
-            if conn:
-                conn.close()
-        return redirect(url_for('prepare_faculty_list'))
-
-    # GET request: Fetch students from department lists (pending deanery review) for this faculty
-    students_for_faculty_list = [] # List of dicts, each is a dept list with its students
-    try:
-        # Get department lists for this faculty with status 'pending_deanery_review'
-        c.execute("""
-            SELECT DISTINCT gl.id as dept_list_id, gl.created_date as list_creation_date, 
-                u_sec.email as secretary_email, ds.department_name
-            FROM graduation_lists gl
-            JOIN users u_sec ON gl.owner_id = u_sec.id AND u_sec.role = ?
-            JOIN department_secretaries ds ON u_sec.id = ds.id
-            JOIN graduation_list_students gls ON gl.id = gls.list_id
-            JOIN students s ON gls.student_id = s.id
-            WHERE gl.list_type = 'department' AND s.faculty = ? AND gl.status = 'pending_deanery_review'
-            ORDER BY ds.department_name, gl.created_date ASC
-        """, (UserRole.DEPARTMENT_SECRETARY.value, faculty_name))
-        
-        department_lists_data = c.fetchall()
-
-        for dept_list_row in department_lists_data:
-            list_details = dict(dept_list_row)
-            if list_details['list_creation_date']:
-                try:
-                    list_details['list_creation_date'] = datetime.strptime(list_details['list_creation_date'], '%Y-%m-%d %H:%M:%S.%f')
-                except ValueError:
-                    try:
-                        # Try without microseconds
-                        list_details['list_creation_date'] = datetime.strptime(list_details['list_creation_date'], '%Y-%m-%d %H:%M:%S')
-                    except ValueError:
-                        try:
-                            # Try date only
-                            list_details['list_creation_date'] = datetime.strptime(list_details['list_creation_date'], '%Y-%m-%d')
-                        except ValueError:
-                            # Leave as string if all parsing fails
-                            pass
-            
-            list_details['students'] = []
-            c.execute("""
-                SELECT s.id as student_user_id, s.student_id, u_stud.email as student_email, 
-                       s.faculty, s.department, gls.rank
-                FROM graduation_list_students gls
-                JOIN students s ON gls.student_id = s.id
-                JOIN users u_stud ON s.id = u_stud.id
-                WHERE gls.list_id = ?
-                ORDER BY gls.rank, s.student_id
-            """, (dept_list_row['dept_list_id'],))
-            students_in_list = c.fetchall()
-            for stud_row in students_in_list:
-                list_details['students'].append(dict(stud_row))
-            students_for_faculty_list.append(list_details)
-
-        if not students_for_faculty_list:
-            flash(f'No department lists from {faculty_name} are currently awaiting faculty-level consolidation.', 'info')
-
-    except sqlite3.Error as e:
-        flash(f'Database error: {e}', 'error')
-        print(f"DB error in prepare_faculty_list GET: {e}")
-    except Exception as e:
-        flash(f'An unexpected error occurred: {e}', 'error')
-        print(f"Unexpected error in prepare_faculty_list GET: {e}")
+        print(f"Unexpected error in prepare_department_list GET: {e}")
     finally:
         if conn:
             conn.close()
             
-    return render_template('prepare_faculty_list.html', 
-                           faculty_name=faculty_name, 
-                           department_lists_for_review=students_for_faculty_list)
-
-# Student Affairs routes
-@app.route('/view_faculty_lists', methods=['GET'])
-@login_required
-@role_required(UserRole.STUDENT_AFFAIRS)
-@feature_required
-def view_faculty_lists():
-    sa_user_id = session.get('user_id')
-    faculty_lists = []
-
-    if not sa_user_id:
-        flash('User information not found. Please log in again.', 'error')
-        return redirect(url_for('login'))
-
-    try:
-        with sqlite3.connect(DATABASE) as conn:
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-
-            # Fetch faculty lists submitted for Student Affairs review
-            # Also fetch the faculty name from the Deanery user who submitted it
-            c.execute("""
-                SELECT gl.id as list_id, gl.created_date, gl.status, 
-                       u_dean.email as deanery_email, dn.faculty_name
-                FROM graduation_lists gl
-                JOIN users u_dean ON gl.owner_id = u_dean.id AND u_dean.role = ?
-                JOIN deaneries dn ON u_dean.id = dn.id
-                WHERE gl.list_type = ? AND gl.status IN (?, ?, ?)
-                ORDER BY gl.created_date DESC
-            """, (UserRole.DEANERY.value, 'faculty', 
-                  'pending_student_affairs_review', 
-                  'approved_by_student_affairs', # Placeholder for a future status
-                  'rejected_by_student_affairs'  # Placeholder for a future status
-                 ))
-            
-            lists_data = c.fetchall()
-
-            if lists_data:
-                for row_data in lists_data:
-                    item = dict(row_data)
-                    if item['created_date']:
-                        try:
-                            item['created_date'] = datetime.strptime(item['created_date'], '%Y-%m-%d %H:%M:%S.%f')
-                        except ValueError:
-                            try:
-                                # Try without microseconds
-                                item['created_date'] = datetime.strptime(item['created_date'], '%Y-%m-%d %H:%M:%S')
-                            except ValueError:
-                                try:
-                                    # Try date only
-                                    item['created_date'] = datetime.strptime(item['created_date'], '%Y-%m-%d')
-                                except ValueError:
-                                    # Leave as string if all parsing fails
-                                    pass
-                    faculty_lists.append(item)
-            else:
-                flash('No faculty graduation lists are currently awaiting review or have been processed.', 'info')
-
-    except sqlite3.Error as e:
-        flash(f'Database error: {e}', 'error')
-        print(f"Database error in view_faculty_lists: {e}")
-    except Exception as e:
-        flash(f'An unexpected error occurred: {e}', 'error')
-        print(f"Unexpected error in view_faculty_lists: {e}")
-        
-    return render_template('view_faculty_lists.html', faculty_lists=faculty_lists)
-
-@app.route('/prepare_university_list', methods=['GET', 'POST'])
-@login_required
-@role_required(UserRole.STUDENT_AFFAIRS)
-@feature_required
-def prepare_university_list():
-    sa_user_id = session.get('user_id')
-
-    if not sa_user_id:
-        flash('User information not found. Please log in again.', 'error')
-        return redirect(url_for('login'))
-
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-
-    if request.method == 'POST':
-        selected_student_ids_str = request.form.getlist('student_ids')
-        if not selected_student_ids_str:
-            flash('No students selected to include in the final university list.', 'warning')
-            conn.close()
-            return redirect(url_for('prepare_university_list'))
-
-        selected_student_ids = [int(sid) for sid in selected_student_ids_str]
-
-        try:
-            current_date = datetime.now()
-            academic_year = f"{current_date.year}/{current_date.year + 1}"
-            semester = "fall" if current_date.month >= 9 else "spring" if current_date.month >= 2 else "summer"
-            
-            c.execute("""INSERT INTO graduation_lists 
-                        (list_type, owner_id, created_date, updated_date, academic_year, semester, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                      ('university', sa_user_id, current_date, current_date, 
-                       academic_year, semester, 'finalized'))
-            university_list_id = c.lastrowid
-
-            students_graduated_count = 0
-            for student_user_id in selected_student_ids:
-                # Get student's current academic info
-                c.execute('''SELECT gpa, total_credits, total_ects 
-                           FROM students WHERE id = ?''', (student_user_id,))
-                student_info = c.fetchone()
-                
-                # Add student to the university list
-                c.execute("""INSERT INTO graduation_list_students 
-                           (list_id, student_id, rank, gpa, total_credits, total_ects, added_date)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                         (university_list_id, student_user_id, 0, student_info['gpa'],
-                          student_info['total_credits'], student_info['total_ects'], current_date))
-
-                # Get student details to create diploma
-                c.execute('''
-                    SELECT u.email, s.id as student_id, s.student_id as student_number,
-                           s.department, s.faculty, s.gpa
-                    FROM users u
-                    JOIN students s ON u.id = s.id
-                    WHERE s.id = ?
-                ''', (student_user_id,))
-                student_data = c.fetchone()
-                
-                # Generate diploma ID
-                student_name = student_data['email'].split('@')[0]
-                diploma_id = f"D{datetime.now().year}{student_data['student_number']}"
-                
-                # Create diploma record
-                c.execute('''
-                    INSERT INTO diplomas (
-                        diploma_id, student_id, student_name, department,
-                        faculty, graduation_date, final_gpa
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (diploma_id, student_user_id, student_name,
-                      student_data['department'], student_data['faculty'],
-                      current_date.date(), student_data['gpa']))
-                
-                # Update student status and send notification
-                c.execute("UPDATE students SET graduation_status = ? WHERE id = ?", 
-                          (GraduationStatus.GRADUATED.value, student_user_id))
-                
-                c.execute("""INSERT INTO notifications (sender_id, receiver_id, notification_type, timestamp)
-                            VALUES (?, ?, ?, ?)""",
-                          (sa_user_id, student_user_id, NotificationType.STUDENT_GRADUATED.value, datetime.now()))
-                
-                students_graduated_count += 1
-            
-            # Update status of processed faculty lists
-            c.execute("""UPDATE graduation_lists SET status = 'consolidated_by_student_affairs'
-                        WHERE list_type = 'faculty' AND status = 'pending_student_affairs_review'""")
-            
-            conn.commit()
-            flash(f'University graduation list (ID: {university_list_id}) finalized! {students_graduated_count} students marked as graduated and notified.', 'success')
-            return redirect(url_for('home'))
-
-        except sqlite3.Error as e:
-            conn.rollback()
-            flash(f'Database error: {e}', 'error')
-            print(f"DB error in prepare_university_list POST: {e}")
-        except Exception as e:
-            conn.rollback()
-            flash(f'An unexpected error occurred: {e}', 'error')
-            print(f"Unexpected error in prepare_university_list POST: {e}")
-        finally:
-            if conn:
-                conn.close()
-        return redirect(url_for('prepare_university_list'))
-
-    # GET request: Fetch students from faculty lists pending Student Affairs review
-    students_for_university_list = []  # List of dicts, each is a faculty list with its students
-    try:
-        # Get faculty lists for Student Affairs review with status 'pending_student_affairs_review'
-        c.execute("""
-            SELECT gl.id as faculty_list_id, gl.created_date as list_creation_date, 
-                   u_dean.email as deanery_email, dn.faculty_name
-            FROM graduation_lists gl
-            JOIN users u_dean ON gl.owner_id = u_dean.id AND u_dean.role = ?
-            JOIN deaneries dn ON u_dean.id = dn.id
-            WHERE gl.list_type = 'faculty' AND gl.status = 'pending_student_affairs_review'
-            ORDER BY dn.faculty_name, gl.created_date ASC
-        """, (UserRole.DEANERY.value,))
-        
-        faculty_lists_data = c.fetchall()
-
-        for faculty_list_row in faculty_lists_data:
-            list_details = dict(faculty_list_row)
-            if list_details['list_creation_date']:
-                try:
-                    list_details['list_creation_date'] = datetime.strptime(list_details['list_creation_date'], '%Y-%m-%d %H:%M:%S.%f')
-                except ValueError:
-                    try:
-                        list_details['list_creation_date'] = datetime.strptime(list_details['list_creation_date'], '%Y-%m-%d %H:%M:%S')
-                    except ValueError:
-                        try:
-                            list_details['list_creation_date'] = datetime.strptime(list_details['list_creation_date'], '%Y-%m-%d')
-                        except ValueError:
-                            pass
-            
-            list_details['students'] = []
-            c.execute("""
-                SELECT s.id as student_user_id, s.student_id, u_stud.email as student_email, 
-                       s.faculty, s.department, gls.rank, gls.gpa, gls.total_credits, gls.total_ects
-                FROM graduation_list_students gls
-                JOIN students s ON gls.student_id = s.id
-                JOIN users u_stud ON s.id = u_stud.id
-                WHERE gls.list_id = ?
-                ORDER BY gls.rank, s.student_id
-            """, (faculty_list_row['faculty_list_id'],))
-            students_in_list = c.fetchall()
-            for stud_row in students_in_list:
-                list_details['students'].append(dict(stud_row))
-            students_for_university_list.append(list_details)
-
-        if not students_for_university_list:
-            flash('No faculty lists are currently awaiting final university-level consolidation.', 'info')
-
-    except sqlite3.Error as e:
-        flash(f'Database error: {e}', 'error')
-        print(f"DB error in prepare_university_list GET: {e}")
-    except Exception as e:
-        flash(f'An unexpected error occurred: {e}', 'error')
-        print(f"Unexpected error in prepare_university_list GET: {e}")
-    finally:
-        if conn:
-            conn.close()
-            
-    return render_template('prepare_university_list.html', 
-                           faculty_lists_for_review=students_for_university_list)
-
+    return render_template('prepare_graduation_list.html', advisees=eligible_advisees)
 
 # Admin route to create staff accounts (for demo purposes)
 @app.route('/admin/create_staff', methods=['GET', 'POST'])
 def create_staff():
     if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
+        email = request.form['email'].strip().lower()
         role = request.form['role']
-        
+
         if not email.endswith('@iyte.edu.tr'):
             flash('Staff email must end with @iyte.edu.tr')
             return redirect(url_for('create_staff'))
-        
+
         try:
             with sqlite3.connect(DATABASE) as conn:
                 conn.row_factory = sqlite3.Row
                 c = conn.cursor()
-                
-                # Insert the user with staff role
-                c.execute('INSERT INTO users (email, password, role) VALUES (?, ?, ?)', 
-                          (email, password, role))
-                user_id = c.lastrowid
-                
-                # Add appropriate details based on role
-                if role == UserRole.ADVISOR.value:
-                    advisor_id = email.split('@')[0]
-                    department_name = request.form.get('department', 'Computer Engineering')
-                    faculty_name = request.form.get('faculty', 'Engineering')
-                    c.execute(
-                        '''INSERT INTO advisors (id, advisor_id, department_name, faculty_name) 
-                           VALUES (?, ?, ?, ?)''',
-                        (user_id, advisor_id, department_name, faculty_name)
-                    )
-                    
-                elif role == UserRole.DEPARTMENT_SECRETARY.value:
-                    secretary_id = email.split('@')[0]
-                    department_name = request.form.get('department', 'Computer Engineering')
-                    c.execute(
-                        'INSERT INTO department_secretaries (id, secretariat_id, department_name) VALUES (?, ?, ?)',
-                        (user_id, secretary_id, department_name)
-                    )
-                
-                elif role == UserRole.STUDENT_AFFAIRS.value:
-                    affair_id = email.split('@')[0]
-                    c.execute('''
-                        INSERT INTO student_affairs (id, student_affair_id) VALUES (?, ?)
-                    ''', (user_id, affair_id))
-                    
-                elif role == UserRole.DEANERY.value:
-                    deanery_id = email.split('@')[0]
-                    faculty_name = request.form.get('faculty', 'Engineering')
-                    c.execute(
-                        'INSERT INTO deaneries (id, deanery_id, faculty_name) VALUES (?, ?, ?)',
-                        (user_id, deanery_id, faculty_name)
-                    )
-                    
-                elif role == UserRole.UNIT.value:
-                    unit_role = request.form.get('unit_role')
-                    if not unit_role:
-                        flash('Unit role is required for unit accounts')
-                        return redirect(url_for('create_staff'))
-                    
-                    # Check if the unit exists
-                    c.execute('SELECT id FROM units WHERE role = ?', (unit_role,))
-                    unit = c.fetchone()
-                    if not unit:
-                        flash(f'Invalid unit role: {unit_role}')
-                        return redirect(url_for('create_staff'))
 
+                # Add to register table if not already present
+                c.execute('SELECT * FROM register WHERE email = ?', (email,))
+                if c.fetchone():
+                    flash('This staff email is already pre-approved.')
+                    return redirect(url_for('create_staff'))
+
+                c.execute('INSERT INTO register (email, role) VALUES (?, ?)', (email, role))
                 conn.commit()
-                flash(f'Staff account created successfully: {email} ({role})')
+                flash(f'Staff pre-approval created: {email} ({role}). The staff member must now register via the registration page.', 'success')
                 return redirect(url_for('create_staff'))
-                
+
         except sqlite3.IntegrityError:
-            flash('User already exists.')
+            flash('Staff already exists in register table.')
         except sqlite3.Error as e:
             flash(f'Database error: {e}')
-    
-    # For the GET request, render a form to create staff accounts
-    return render_template('create_staff.html', 
+
+    return render_template('create_staff.html',
                           roles=[role.value for role in UserRole if role != UserRole.STUDENT],
                           unit_roles=[role.value for role in Roles])
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        email = request.form['email'].strip().lower()
+        password = request.form['password']
+        confirm_password = request.form['confirm_password']
+
+        # Check if email is pre-approved
+        with sqlite3.connect(DATABASE) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute('SELECT * FROM register WHERE email = ?', (email,))
+            reg_entry = c.fetchone()
+            if not reg_entry:
+                flash('This email is not authorized to register.', 'error')
+                return redirect(url_for('register'))
+
+            # Check if already registered
+            c.execute('SELECT * FROM users WHERE email = ?', (email,))
+            if c.fetchone():
+                flash('This email is already registered.', 'error')
+                return redirect(url_for('login'))
+
+            if len(password) < 8:
+                flash('Password must be at least 8 characters.', 'error')
+                return redirect(url_for('register'))
+            if password != confirm_password:
+                flash('Passwords do not match.', 'error')
+                return redirect(url_for('register'))
+
+            # Register user
+            c.execute('INSERT INTO users (email, role, register_id) VALUES (?, ?, ?)',
+                      (email, reg_entry['role'], reg_entry['id']))
+            user_id = c.lastrowid
+            password_hash = generate_password_hash(password)
+            c.execute('INSERT INTO user_passwords (user_id, password_hash) VALUES (?, ?)',
+                      (user_id, password_hash))
+            conn.commit()
+            flash('Registration successful! You can now log in.', 'success')
+            return redirect(url_for('login'))
+
+    return render_template('register.html')
 
 if __name__ == '__main__':
     init_db()
