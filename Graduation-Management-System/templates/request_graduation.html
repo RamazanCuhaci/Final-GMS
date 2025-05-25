@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <h2>Graduation Request</h2>
+    
+    <div class="card">
+        <div class="card-body">
+            <h5>Student Information</h5>
+            <p><strong>Student ID:</strong> {{ student.student_id }}</p>
+            <p><strong>Department:</strong> {{ student.department }}</p>
+            <p><strong>Faculty:</strong> {{ student.faculty }}</p>
+            <p><strong>Current Status:</strong> {{ student.graduation_status }}</p>
+            
+            <hr>
+            
+            <h5>Academic Standing</h5>
+            <p><strong>GPA:</strong> {{ "%.2f"|format(student.gpa) }}</p>
+            <p><strong>Total Credits:</strong> {{ student.total_credits }}</p>
+            <p><strong>Total ECTS:</strong> {{ student.total_ects }}</p>
+            
+            <hr>
+            
+            <h5>Graduation Requirements</h5>
+            <ul class="list-group">
+                <li class="list-group-item {% if student.gpa >= 2.00 %}list-group-item-success{% else %}list-group-item-danger{% endif %}">
+                    GPA ≥ 2.00 
+                    {% if student.gpa >= 2.00 %}
+                        <span class="badge badge-success">✓ Met</span>
+                    {% else %}
+                        <span class="badge badge-danger">✗ Not Met (Current: {{ "%.2f"|format(student.gpa) }})</span>
+                    {% endif %}
+                </li>
+                <li class="list-group-item {% if student.total_credits >= 140 %}list-group-item-success{% else %}list-group-item-danger{% endif %}">
+                    Credits ≥ 140 
+                    {% if student.total_credits >= 140 %}
+                        <span class="badge badge-success">✓ Met</span>
+                    {% else %}
+                        <span class="badge badge-danger">✗ Not Met (Current: {{ student.total_credits }})</span>
+                    {% endif %}
+                </li>
+                <li class="list-group-item {% if student.total_ects >= 240 %}list-group-item-success{% else %}list-group-item-danger{% endif %}">
+                    ECTS ≥ 240 
+                    {% if student.total_ects >= 240 %}
+                        <span class="badge badge-success">✓ Met</span>
+                    {% else %}
+                        <span class="badge badge-danger">✗ Not Met (Current: {{ student.total_ects }})</span>
+                    {% endif %}
+                </li>
+            </ul>
+            
+            <hr>
+            
+            {% if is_eligible and student.graduation_status not in ['applied', 'graduated'] %}
+                <div class="alert alert-success">
+                    <strong>✓ You are eligible to request graduation!</strong>
+                </div>
+                <form method="POST">
+                    <button type="submit" class="btn btn-primary btn-lg">Submit Graduation Request</button>
+                </form>
+            {% elif student.graduation_status == 'applied' %}
+                <div class="alert alert-info">
+                    <strong>Your graduation request has been submitted and is being processed.</strong>
+                </div>
+            {% elif student.graduation_status == 'graduated' %}
+                <div class="alert alert-success">
+                    <strong>Congratulations! You have graduated.</strong>
+                </div>
+            {% else %}
+                <div class="alert alert-warning">
+                    <strong>You are not yet eligible to request graduation.</strong><br>
+                    Please fulfill all the requirements shown above.
+                </div>
+            {% endif %}
+            
+            <a href="{{ url_for('home') }}" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

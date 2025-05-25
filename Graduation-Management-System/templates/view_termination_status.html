@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Termination Status{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-10 col-xl-8">
+        <div class="card shadow-lg border-0 mb-4">
+            <div class="card-header bg-danger text-white text-center rounded-top">
+                <h3 class="mb-0 fw-bold">Termination Request Status</h3>
+            </div>
+            <div class="card-body p-4">
+                {# Progress Bar Calculation #}
+                {% set approved_count = approvals | selectattr('status', 'equalto', 'approved') | list | length %}
+                {% set total_count = approvals | length %}
+                {% set progress = (approved_count / total_count * 100) | round | int if total_count > 0 else 0 %}
+
+                <div class="progress mb-4" style="height: 25px;">
+                    <div class="progress-bar bg-danger" role="progressbar"
+                         :style="`width: ${progress}%`"
+                         aria-valuenow="{{ progress }}"
+                         aria-valuemin="0" 
+                         aria-valuemax="100">
+                        {{ progress }}%
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle rounded">
+                        <thead class="table-danger">
+                            <tr>
+                                <th>Unit</th>
+                                <th>Status</th>
+                                <th>Date</th>
+                                <th>Comments</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for approval in approvals %}
+                            <tr>
+                                <td><strong>{{ approval.unit_role.replace('_', ' ') | title }}</strong></td>
+                                <td>
+                                    <span class="badge rounded-pill
+                                        {% if approval.status == 'approved' %} bg-success
+                                        {% elif approval.status == 'rejected' %} bg-danger
+                                        {% else %} bg-warning text-dark {% endif %}">
+                                        {{ approval.status | capitalize }}
+                                    </span>
+                                </td>
+                                <td>
+                                    {% if approval.approval_date %}
+                                        {{ approval.approval_date.strftime('%Y-%m-%d %H:%M') }}
+                                    {% else %}
+                                        <em class="text-muted">Pending</em>
+                                    {% endif %}
+                                </td>
+                                <td>{{ approval.comments or '<em class="text-muted">No comments</em>' | safe }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="alert text-center mt-4
+                    {% if request.status == 'approved' %} alert-success
+                    {% elif request.status == 'rejected' %} alert-danger
+                    {% else %} alert-info {% endif %}">
+                    <h5 class="alert-heading mb-0">
+                        Overall Status: <strong>{{ request.status | capitalize }}</strong>
+                        {% if request.final_approval_date %}
+                            <br>
+                            <small>(Completed on {{ request.final_approval_date.strftime('%Y-%m-%d') }})</small>
+                        {% endif %}
+                    </h5>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
